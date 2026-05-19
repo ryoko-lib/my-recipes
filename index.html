@@ -278,6 +278,21 @@ main{max-width:600px;margin:0 auto;padding:16px 12px;}
   </div>
 </div>
 
+<!-- 確認モーダル -->
+<div class="modal-overlay" id="modal-confirm" onclick="closeModal('modal-confirm')">
+  <div class="modal-sheet" onclick="event.stopPropagation()" style="max-width:420px">
+    <div class="modal-header">
+      <span class="modal-title" id="confirm-title">確認</span>
+      <button class="modal-close" onclick="closeModal('modal-confirm')">×</button>
+    </div>
+    <div id="confirm-body" style="font-size:14px;line-height:1.7;color:#555"></div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeModal('modal-confirm')">キャンセル</button>
+      <button class="btn-save" id="confirm-ok-btn">続ける</button>
+    </div>
+  </div>
+</div>
+
 <!-- 献立ピッカーモーダル -->
 <div class="modal-overlay" id="modal-picker" onclick="closeModal('modal-picker')">
   <div class="modal-sheet" onclick="event.stopPropagation()">
@@ -700,31 +715,102 @@ function clearCurrentSlot(){
 }
 
 // ── バックアップ ──
+function fmtDateTime(d){
+  return `${d.getFullYear()}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+}
+
 function exportRecipes(){
-  // ファイル名固定で iCloud Drive で管理しやすく
-  const b=new Blob([JSON.stringify(recipes,null,2)],{type:'application/json'});
+  // 保存日時付きJSON形式（後方互換のため旧形式の配列もimport側で受け付ける）
+  const now=new Date();
+  const payload={savedAt:now.toISOString(),recipes:recipes};
+  const b=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
   const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;
   a.download='recipes.json';
   a.click();URL.revokeObjectURL(u);
-  // 書き出し日時を記録
-  const now=new Date();
   storageSet('last_backup', now.toISOString(), false);
   showToast(`${recipes.length}件を書き出しました`);
   renderBackupInfo();
 }
+
+function doImport(list, savedAt){
+  recipes=list; persist('r_v4',recipes); renderRecipes();
+  // 取り込んだデータの「いつのデータか」を最終バックアップ日時として記録
+  if(savedAt) storageSet('last_backup', savedAt, false);
+  showToast(`${list.length}件のレシピを復元しました`);
+  renderBackupInfo();
+}
+
 function importRecipes(e){
   const f=e.target.files[0];if(!f)return;
   const rd=new FileReader();
   rd.onload=ev=>{
     try{
       const d=JSON.parse(ev.target.result);
-      if(!Array.isArray(d))throw 0;
-      recipes=d;persist('r_v4',recipes);renderRecipes();
-      showToast(`${d.length}件のレシピを復元しました`);
-      renderBackupInfo();
+      let list, savedAt=null;
+      if(Array.isArray(d)){
+        // 旧形式（配列だけ）
+        list=d;
+      }else if(d && Array.isArray(d.recipes)){
+        // 新形式 {savedAt, recipes}
+        list=d.recipes;
+        savedAt=d.savedAt||null;
+      }else{
+        throw 0;
+      }
+
+      const lastBackup=storageGet('last_backup', false);
+
+      // 日付比較で古いファイルなら警告
+      if(savedAt && lastBackup){
+        const fileDate=new Date(savedAt);
+        const curDate=new Date(lastBackup);
+        if(fileDate < curDate){
+          const diffDays=Math.floor((curDate-fileDate)/(1000*60*60*24));
+          const diffLabel = diffDays===0 ? '同日内（時刻が古い）' : `${diffDays}日前`;
+          showConfirm(
+            '⚠️ このバックアップは古いです',
+            `<div style="background:#fff8e1;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#b7860a">
+              ファイルの日付：<b>${fmtDateTime(fileDate)}</b>（${diffLabel}）<br>
+              現在のデータ ：<b>${fmtDateTime(curDate)}</b>
+            </div>
+            <div>読み込むと、現在の<b>${recipes.length}件</b>のレシピが、ファイルの<b>${list.length}件</b>で上書きされます。</div>
+            <div style="margin-top:10px;color:#c0392b;font-weight:700">本当に上書きしますか？</div>`,
+            '上書きする',
+            ()=>doImport(list, savedAt)
+          );
+          return;
+        }
+      }
+
+      // 旧形式（日時情報なし）かつ既存データありなら念のため確認
+      if(!savedAt && lastBackup){
+        showConfirm(
+          '📂 バックアップを読み込む',
+          `<div style="background:#fff8e1;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:#b7860a">
+            このファイルには保存日時の情報がありません（旧形式）。新しい形式は書き出し時に自動で付与されます。
+          </div>
+          <div>現在の<b>${recipes.length}件</b>のレシピが、ファイルの<b>${list.length}件</b>で上書きされます。</div>`,
+          '読み込む',
+          ()=>doImport(list, null)
+        );
+        return;
+      }
+
+      // 古くない or 初回読み込み → そのまま反映
+      doImport(list, savedAt);
     }catch{showToast('ファイルが正しくありません', true);}
   };
   rd.readAsText(f);e.target.value='';
+}
+
+// 確認モーダル
+function showConfirm(title, bodyHTML, okLabel, onOk){
+  document.getElementById('confirm-title').textContent=title;
+  document.getElementById('confirm-body').innerHTML=bodyHTML;
+  const btn=document.getElementById('confirm-ok-btn');
+  btn.textContent=okLabel||'続ける';
+  btn.onclick=()=>{ closeModal('modal-confirm'); onOk(); };
+  openModal('modal-confirm');
 }
 
 // 最終バックアップ日時を表示
