@@ -719,11 +719,30 @@ function fmtDateTime(d){
   return `${d.getFullYear()}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
 }
 
-function exportRecipes(){
+async function exportRecipes(){
   // 保存日時付きJSON形式（後方互換のため旧形式の配列もimport側で受け付ける）
   const now=new Date();
   const payload={savedAt:now.toISOString(),recipes:recipes};
-  const b=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const json=JSON.stringify(payload,null,2);
+  const file=new File([json],'recipes.json',{type:'application/json'});
+
+  // iPhone/iPad: Web Share APIで共有シートを開く（保存先を毎回選べる）
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try{
+      await navigator.share({files:[file], title:'おうちレシピ帳のバックアップ'});
+      storageSet('last_backup', now.toISOString(), false);
+      showToast(`${recipes.length}件を書き出しました`);
+      renderBackupInfo();
+      return;
+    }catch(err){
+      // ユーザーがキャンセル → 何もしない
+      if(err && err.name==='AbortError') return;
+      // それ以外のエラーは下のダウンロード方式にフォールバック
+    }
+  }
+
+  // Mac等：通常のダウンロード
+  const b=new Blob([json],{type:'application/json'});
   const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;
   a.download='recipes.json';
   a.click();URL.revokeObjectURL(u);
